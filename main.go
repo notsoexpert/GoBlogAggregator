@@ -1,15 +1,22 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
+	"github.com/google/uuid"
+	_ "github.com/lib/pq"
 	"github.com/notsoexpert/goblogaggregator/internal/config"
+	"github.com/notsoexpert/goblogaggregator/internal/database"
 )
 
 type state struct {
-	Config *config.Config
+	Config    *config.Config
+	DBQueries *database.Queries
 }
 
 type command struct {
@@ -32,9 +39,18 @@ func main() {
 		currentState.Config = &cfg
 	}
 
+	db, err := sql.Open("postgres", currentState.Config.DBUrl)
+	if err != nil {
+		fmt.Println("error: failed to connect to database")
+		os.Exit(1)
+	}
+
+	currentState.DBQueries = database.New(db)
+
 	var commands commands
 	commands.Commands = make(map[string]func(*state, command) error)
 	commands.register("login", handlerLogin)
+	commands.register("register", handlerRegister)
 
 	if len(os.Args) < 2 {
 		fmt.Println("error: not enough arguments")
@@ -75,5 +91,32 @@ func handlerLogin(s *state, cmd command) error {
 	}
 
 	fmt.Println("User has been set to", cmd.Args[0])
+	return nil
+}
+
+func handlerRegister(s *state, cmd command) error {
+	if len(cmd.Args) == 0 {
+		return errors.New("error: no username provided")
+	}
+
+	sqlUser, err := s.DBQueries.CreateUser(context.Background(), database.CreateUserParams{
+		ID:        uuid.New(),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Name:      cmd.Args[0],
+	})
+	if err != nil {
+		fmt.Println("failed to create user in database: ", err.Error())
+		os.Exit(1)
+	}
+
+	if err := s.Config.SetUser(cmd.Args[0]); err != nil {
+		fmt.Println("failed to switch to new user: ", err.Error())
+		os.Exit(1)
+	}
+	fmt.Printf("User %s created successfully! Current user is now %s.\n", cmd.Args[0], s.Config.CurrentUserName)
+
+	fmt.Printf("User data: %v\n", sqlUser)
+
 	return nil
 }
