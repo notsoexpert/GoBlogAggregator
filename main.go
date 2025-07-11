@@ -154,6 +154,10 @@ func handlerUsers(s *state, cmd command) error {
 		}
 		fmt.Println()
 	}
+
+	if len(sqlUsers) == 0 {
+		fmt.Println("No users registered.")
+	}
 	return nil
 }
 
@@ -216,6 +220,10 @@ func handlerFeeds(s *state, cmd command) error {
 		Creator: %s
 		`, feed.Name, feed.Url, sqlUser.Name)
 		fmt.Println()
+	}
+
+	if len(sqlFeeds) == 0 {
+		fmt.Println("No feeds pulled to database.")
 	}
 	return nil
 }
