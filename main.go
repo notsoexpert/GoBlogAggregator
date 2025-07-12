@@ -58,6 +58,9 @@ func main() {
 	commands.register("agg", handlerAgg)
 	commands.register("addfeed", handlerAddFeed)
 	commands.register("feeds", handlerFeeds)
+	commands.register("follow", handlerFollow)
+	commands.register("following", handlerFollowing)
+
 
 	if len(os.Args) < 2 {
 		fmt.Println("error: not enough arguments")
@@ -197,7 +200,20 @@ func handlerAddFeed(s *state, cmd command) error {
 		return fmt.Errorf("error: failed to create feed in database - %v", err)
 	}
 
-	fmt.Printf("Feed %s has been added.\n", newSqlFeed.Name)
+	fmt.Printf("Feed \"%s\" has been added.\n", newSqlFeed.Name)
+
+	_, err = s.DBQueries.CreateFeedFollow(context.Background(), database.CreateFeedFollowParams{
+		ID: uuid.New(),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		UserID: uuid.NullUUID{UUID: sqlUser.ID, Valid: true},
+		FeedID: uuid.NullUUID{UUID: newSqlFeed.ID, Valid: true},
+	})
+	if err != nil {
+		return fmt.Errorf("error: failed to create feed follow entry - %v", err)
+	}
+
+	fmt.Printf("%s now following \"%s\"\n", sqlUser.Name, newSqlFeed.Name)
 
 	fmt.Printf("Feed data:\n%v\n", newSqlFeed)
 	return nil
@@ -225,5 +241,54 @@ func handlerFeeds(s *state, cmd command) error {
 	if len(sqlFeeds) == 0 {
 		fmt.Println("No feeds pulled to database.")
 	}
+	return nil
+}
+
+func handlerFollow(s *state, cmd command) error {
+	if len(cmd.Args) == 0 {
+		return errors.New("error: no url provided")
+	}
+
+	sqlUser, err := s.DBQueries.GetUser(context.Background(), s.Config.CurrentUserName)
+	if err != nil {
+		return fmt.Errorf("error: current user %s not found - %v", s.Config.CurrentUserName, err)
+	}
+
+	sqlFeed, err := s.DBQueries.GetFeed(context.Background(), cmd.Args[0])
+	if err != nil {
+		return fmt.Errorf("error: no feeds added using url %s - %v", cmd.Args[0], err)
+	}
+
+	_, err = s.DBQueries.CreateFeedFollow(context.Background(), database.CreateFeedFollowParams{
+		ID: uuid.New(),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		UserID: uuid.NullUUID{UUID: sqlUser.ID, Valid: true},
+		FeedID: uuid.NullUUID{UUID: sqlFeed.ID, Valid: true},
+	})
+	if err != nil {
+		return fmt.Errorf("error: failed to create feed follow entry - %v", err)
+	}
+
+	fmt.Printf("%s is now following \"%s\"\n", sqlUser.Name, sqlFeed.Name)
+	return nil
+}
+
+func handlerFollowing(s *state, cmd command) error {
+	sqlUser, err := s.DBQueries.GetUser(context.Background(), s.Config.CurrentUserName)
+	if err != nil {
+		return fmt.Errorf("error: current user %s not found - %v", s.Config.CurrentUserName, err)
+	}
+
+	sqlFeedFollows, err := s.DBQueries.GetFeedFollowsForUser(context.Background(), uuid.NullUUID{UUID: sqlUser.ID, Valid: true})
+	if err != nil {
+		return fmt.Errorf("error: failed to retreive follow records for user %s - %v", s.Config.CurrentUserName, err)
+	}
+
+	fmt.Printf("%s is currently following:\n", s.Config.CurrentUserName)
+	for _, follows := range sqlFeedFollows {
+		fmt.Printf("* \"%s\"\n", follows.FeedName)
+	}
+
 	return nil
 }
