@@ -1,12 +1,12 @@
 # Gator - A Blog Aggregator Written in Go
 
-Boot.Dev - Create a Blog Aggregator in Go
+## Boot.Dev - Create a Blog Aggregator in Go
 
-Prerequisites: 
+### Prerequisites:  
     Postgres - [Download](https://www.postgresql.org/download/)  
     Go - [Download](https://go.dev/dl/)  
 
-Install Instructions:  
+### Install Instructions:  
     1. Clone repository  
 
         `git clone https://github.com/notsoexpert/GoBlogAggregator.git`
@@ -46,7 +46,7 @@ Install Instructions:
 
         `psql postgres://postgres:@localhost:5432/gator`
 
-Usage Instructions:  
+### Usage Instructions:  
 
     Gator is a CLI program that expects at least the name of a command each time it is used.  
 
