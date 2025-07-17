@@ -30,6 +30,40 @@ type commands struct {
 	Commands map[string]func(*state, command) error
 }
 
+func middlewareLoggedIn(handler func(s *state, cmd command, sqlUser database.User) error) func(*state, command) error {
+	return func(s *state, cmd command) error {
+		sqlUser, err := s.DBQueries.GetUser(context.Background(), s.Config.CurrentUserName)
+		if err != nil {
+			return fmt.Errorf("error: current user %s not found - %v", s.Config.CurrentUserName, err)
+		}
+
+		return handler(s, cmd, sqlUser)
+	}
+}
+
+func scrapeFeeds(s *state) error {
+	// get next feed
+	sqlFeed, err := s.DBQueries.GetNextFeedToFetch(context.Background())
+	if err != nil {
+		return fmt.Errorf("error: failed to get next feed from database - %v", err)
+	}
+
+	// mark as fetched
+	err = s.DBQueries.MarkFeedFetched(context.Background(), sqlFeed.ID)
+
+	// fetch the feed
+	rssFeed, err := rss.FetchFeed(context.Background(), sqlFeed.Url)
+	if err != nil {
+		return err
+	}
+
+	// iterate and print
+	for _, item := range rssFeed.Channel.Item {
+		fmt.Println("* ", item.Title)
+	}
+	return nil
+}
+
 func main() {
 	var currentState state
 	{
@@ -56,10 +90,12 @@ func main() {
 	commands.register("reset", handlerReset)
 	commands.register("users", handlerUsers)
 	commands.register("agg", handlerAgg)
-	commands.register("addfeed", handlerAddFeed)
+	commands.register("addfeed", middlewareLoggedIn(handlerAddFeed))
 	commands.register("feeds", handlerFeeds)
-	commands.register("follow", handlerFollow)
-	commands.register("following", handlerFollowing)
+	commands.register("follow", middlewareLoggedIn(handlerFollow))
+	commands.register("following", middlewareLoggedIn(handlerFollowing))
+	commands.register("unfollow", middlewareLoggedIn(handlerUnfollow))
+
 
 
 	if len(os.Args) < 2 {
@@ -165,27 +201,35 @@ func handlerUsers(s *state, cmd command) error {
 }
 
 func handlerAgg(s *state, cmd command) error {
-	rssFeed, err := rss.FetchFeed(context.Background(), "https://www.wagslane.dev/index.xml")
-	if err != nil {
-		return err
+	if len(cmd.Args) == 0 {
+		return errors.New("error: no request period provided (1s / 1m / 1h / etc)")
 	}
 
-	fmt.Printf("RSSFeed from https://www.wagslane.dev/index.xml:\n%v\n", rssFeed)
+	time_between_reqs, err := time.ParseDuration(cmd.Args[0])
+	if err != nil {
+		return fmt.Errorf("error: failed to parse request period - %v", err)
+	}
+
+	fmt.Println("Collecting feeds every ", cmd.Args[0])
+
+	ticker := time.NewTicker(time_between_reqs)
+	for ; ; <-ticker.C {
+		err = scrapeFeeds(s)
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
-func handlerAddFeed(s *state, cmd command) error {
+func handlerAddFeed(s *state, cmd command, sqlUser database.User) error {
 	if len(cmd.Args) == 0 {
 		return errors.New("error: no name provided")
 	}
 
 	if len(cmd.Args) == 1 {
 		return errors.New("error: no url provided")
-	}
-
-	sqlUser, err := s.DBQueries.GetUser(context.Background(), s.Config.CurrentUserName)
-	if err != nil {
-		return fmt.Errorf("error: current user %s not found - %v", s.Config.CurrentUserName, err)
 	}
 
 	newSqlFeed, err := s.DBQueries.CreateFeed(context.Background(), database.CreateFeedParams{
@@ -244,14 +288,9 @@ func handlerFeeds(s *state, cmd command) error {
 	return nil
 }
 
-func handlerFollow(s *state, cmd command) error {
+func handlerFollow(s *state, cmd command, sqlUser database.User) error {
 	if len(cmd.Args) == 0 {
 		return errors.New("error: no url provided")
-	}
-
-	sqlUser, err := s.DBQueries.GetUser(context.Background(), s.Config.CurrentUserName)
-	if err != nil {
-		return fmt.Errorf("error: current user %s not found - %v", s.Config.CurrentUserName, err)
 	}
 
 	sqlFeed, err := s.DBQueries.GetFeed(context.Background(), cmd.Args[0])
@@ -274,21 +313,38 @@ func handlerFollow(s *state, cmd command) error {
 	return nil
 }
 
-func handlerFollowing(s *state, cmd command) error {
-	sqlUser, err := s.DBQueries.GetUser(context.Background(), s.Config.CurrentUserName)
-	if err != nil {
-		return fmt.Errorf("error: current user %s not found - %v", s.Config.CurrentUserName, err)
-	}
-
+func handlerFollowing(s *state, cmd command, sqlUser database.User) error {
 	sqlFeedFollows, err := s.DBQueries.GetFeedFollowsForUser(context.Background(), uuid.NullUUID{UUID: sqlUser.ID, Valid: true})
 	if err != nil {
 		return fmt.Errorf("error: failed to retreive follow records for user %s - %v", s.Config.CurrentUserName, err)
 	}
 
+	if len(sqlFeedFollows) == 0 {
+		fmt.Printf("%s is not currently following any feeds.\n", s.Config.CurrentUserName)
+		return nil
+	}
+	
 	fmt.Printf("%s is currently following:\n", s.Config.CurrentUserName)
 	for _, follows := range sqlFeedFollows {
 		fmt.Printf("* \"%s\"\n", follows.FeedName)
 	}
 
+	return nil
+}
+
+func handlerUnfollow(s *state, cmd command, sqlUser database.User) error {
+	if len(cmd.Args) == 0 {
+		return errors.New("error: no url provided")
+	}
+
+	err := s.DBQueries.DeleteFeedFollow(context.Background(), database.DeleteFeedFollowParams{
+		Name: s.Config.CurrentUserName,
+		Url: cmd.Args[0],
+	})
+	if err != nil {
+		return fmt.Errorf("error: failed %s unfollow of %s - %v", s.Config.CurrentUserName, cmd.Args[0], err)
+	}
+
+	fmt.Printf("%s has unfollowed feed at %s\n", s.Config.CurrentUserName, cmd.Args[0])
 	return nil
 }
