@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,6 +42,19 @@ func middlewareLoggedIn(handler func(s *state, cmd command, sqlUser database.Use
 	}
 }
 
+func parsePublishedTime(pubTime string) sql.NullTime {
+	validLayouts := []string{
+		time.RFC3339, time.ANSIC, time.Kitchen, time.Stamp, "Mon, 02 Jan 2006 15:04:05 -0700",
+	}
+	for _, layout := range validLayouts {
+		time, err := time.Parse(layout, pubTime)
+		if err == nil {
+			return sql.NullTime{Time: time, Valid: true}
+		}
+	}
+	return sql.NullTime{}
+}
+
 func scrapeFeeds(s *state) error {
 	// get next feed
 	sqlFeed, err := s.DBQueries.GetNextFeedToFetch(context.Background())
@@ -50,6 +64,9 @@ func scrapeFeeds(s *state) error {
 
 	// mark as fetched
 	err = s.DBQueries.MarkFeedFetched(context.Background(), sqlFeed.ID)
+	if err != nil {
+		return err
+	}
 
 	// fetch the feed
 	rssFeed, err := rss.FetchFeed(context.Background(), sqlFeed.Url)
@@ -59,7 +76,22 @@ func scrapeFeeds(s *state) error {
 
 	// iterate and print
 	for _, item := range rssFeed.Channel.Item {
-		fmt.Println("* ", item.Title)
+		published_at := parsePublishedTime(item.PubDate)
+		_, err := s.DBQueries.CreatePost(context.Background(), database.CreatePostParams{
+			ID:          uuid.New(),
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
+			Title:       item.Title,
+			Url:         item.Link,
+			Description: item.Description,
+			PublishedAt: published_at,
+			FeedID:      sqlFeed.ID,
+		})
+		if err != nil {
+			if !strings.Contains(err.Error(), "posts_url_key") {
+				fmt.Println(err.Error())
+			}
+		}
 	}
 	return nil
 }
@@ -95,8 +127,7 @@ func main() {
 	commands.register("follow", middlewareLoggedIn(handlerFollow))
 	commands.register("following", middlewareLoggedIn(handlerFollowing))
 	commands.register("unfollow", middlewareLoggedIn(handlerUnfollow))
-
-
+	commands.register("browse", middlewareLoggedIn(handlerBrowse))
 
 	if len(os.Args) < 2 {
 		fmt.Println("error: not enough arguments")
@@ -219,8 +250,6 @@ func handlerAgg(s *state, cmd command) error {
 			return err
 		}
 	}
-
-	return nil
 }
 
 func handlerAddFeed(s *state, cmd command, sqlUser database.User) error {
@@ -247,11 +276,11 @@ func handlerAddFeed(s *state, cmd command, sqlUser database.User) error {
 	fmt.Printf("Feed \"%s\" has been added.\n", newSqlFeed.Name)
 
 	_, err = s.DBQueries.CreateFeedFollow(context.Background(), database.CreateFeedFollowParams{
-		ID: uuid.New(),
+		ID:        uuid.New(),
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
-		UserID: uuid.NullUUID{UUID: sqlUser.ID, Valid: true},
-		FeedID: uuid.NullUUID{UUID: newSqlFeed.ID, Valid: true},
+		UserID:    uuid.NullUUID{UUID: sqlUser.ID, Valid: true},
+		FeedID:    uuid.NullUUID{UUID: newSqlFeed.ID, Valid: true},
 	})
 	if err != nil {
 		return fmt.Errorf("error: failed to create feed follow entry - %v", err)
@@ -299,11 +328,11 @@ func handlerFollow(s *state, cmd command, sqlUser database.User) error {
 	}
 
 	_, err = s.DBQueries.CreateFeedFollow(context.Background(), database.CreateFeedFollowParams{
-		ID: uuid.New(),
+		ID:        uuid.New(),
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
-		UserID: uuid.NullUUID{UUID: sqlUser.ID, Valid: true},
-		FeedID: uuid.NullUUID{UUID: sqlFeed.ID, Valid: true},
+		UserID:    uuid.NullUUID{UUID: sqlUser.ID, Valid: true},
+		FeedID:    uuid.NullUUID{UUID: sqlFeed.ID, Valid: true},
 	})
 	if err != nil {
 		return fmt.Errorf("error: failed to create feed follow entry - %v", err)
@@ -323,7 +352,7 @@ func handlerFollowing(s *state, cmd command, sqlUser database.User) error {
 		fmt.Printf("%s is not currently following any feeds.\n", s.Config.CurrentUserName)
 		return nil
 	}
-	
+
 	fmt.Printf("%s is currently following:\n", s.Config.CurrentUserName)
 	for _, follows := range sqlFeedFollows {
 		fmt.Printf("* \"%s\"\n", follows.FeedName)
@@ -339,12 +368,36 @@ func handlerUnfollow(s *state, cmd command, sqlUser database.User) error {
 
 	err := s.DBQueries.DeleteFeedFollow(context.Background(), database.DeleteFeedFollowParams{
 		Name: s.Config.CurrentUserName,
-		Url: cmd.Args[0],
+		Url:  cmd.Args[0],
 	})
 	if err != nil {
 		return fmt.Errorf("error: failed %s unfollow of %s - %v", s.Config.CurrentUserName, cmd.Args[0], err)
 	}
 
 	fmt.Printf("%s has unfollowed feed at %s\n", s.Config.CurrentUserName, cmd.Args[0])
+	return nil
+}
+
+func handlerBrowse(s *state, cmd command, sqlUser database.User) error {
+	limit := 2
+	if len(cmd.Args) > 0 {
+		var err error
+		limit, err = strconv.Atoi(cmd.Args[0])
+		if err != nil {
+			return errors.New("error: invalid post limit")
+		}
+	}
+
+	sqlPosts, err := s.DBQueries.GetPostsForUser(context.Background(), database.GetPostsForUserParams{
+		UserID: uuid.NullUUID{UUID: sqlUser.ID, Valid: true},
+		Limit:  int32(limit),
+	})
+	if err != nil {
+		return fmt.Errorf("error: failed to retrieve posts for %s - %v", s.Config.CurrentUserName, err)
+	}
+
+	for _, post := range sqlPosts {
+		fmt.Printf("\n\t* \"%s\"\n\t* \"%s\"\n\t* Published: %v\n\t* URL: %s\n", post.Title, post.Description, post.PublishedAt.Time, post.Url)
+	}
 	return nil
 }
