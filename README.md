@@ -3,8 +3,8 @@
 ## Boot.Dev - Create a Blog Aggregator in Go
 
 ### Prerequisites:  
-    Postgres - [Download](https://www.postgresql.org/download/)  
-    Go - [Download](https://go.dev/dl/)  
+Postgres - [Download](https://www.postgresql.org/download/)  
+Go - [Download](https://go.dev/dl/)  
 
 ### Install Instructions:  
 1. Clone repository  
@@ -50,18 +50,18 @@ You can test this string using your database frontend:
 
 Gator is a CLI program that expects at least the name of a command each time it is used.  
 
-Commands:  
+####Commands:  
         
-login  
-register  
-users  
-addfeed  
-feeds  
-follow  
-following  
-unfollow  
-agg  
-browse  
+- login  
+- register  
+- users  
+- addfeed  
+- feeds  
+- follow  
+- following  
+- unfollow  
+- agg  
+- browse  
         
 1. Users:  
 
